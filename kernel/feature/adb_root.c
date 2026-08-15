@@ -48,6 +48,29 @@ static long is_exec_adbd(const char __user *filename_user)
 }
 #endif
 
+static long is_exec_adbd(const char __user *filename_user)
+{
+    static const char kAdbd[] = "/adbd";
+    static const size_t kAdbdLen = sizeof(kAdbd) - 1;
+    // should be bigger than `/apex/com.android.adbd/bin/adbd`
+    char buf[40];
+    char __user *fn;
+    long ret;
+    fn = (char __user *)untagged_addr((unsigned long)filename_user);
+    memset(buf, 0, sizeof(buf));
+
+    ret = strncpy_from_user(buf, fn, sizeof(buf));
+    if (ret < kAdbdLen)
+        return 0;
+
+    if (memcmp(buf + ret - kAdbdLen, kAdbd, kAdbdLen) != 0) {
+        return 0;
+    }
+
+    return 1;
+}
+#endif
+
 static long is_libadbroot_ok(void)
 {
     static const char kLibAdbRoot[] = "/data/adb/ksu/lib/libadbroot.so";
@@ -76,7 +99,6 @@ static long setup_ld_preload(struct pt_regs *regs, unsigned long *envp_p)
     static const size_t kPtrSize = sizeof(unsigned long);
     unsigned long stackp = current_user_stack_pointer();
     unsigned long envp, ld_preload_p, ld_library_path_p;
-
     unsigned long *tmp_env_p = NULL, *tmp_env_p2 = NULL;
     size_t env_count = 0, total_size;
     long ret;
@@ -243,6 +265,7 @@ long ksu_adb_root_handle_execveat(struct pt_regs *regs)
 #else
     if (unlikely(ksu_adb_root)) {
 #endif
+
         return do_ksu_adb_root_handle_execve((const char __user *)PT_REGS_PARM2(regs), regs,
                                              (unsigned long *)&PT_REGS_SYSCALL_PARM4(regs));
     }
