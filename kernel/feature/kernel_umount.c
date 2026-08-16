@@ -1,23 +1,3 @@
-#include <linux/sched.h>
-#include <linux/slab.h>
-#include <linux/task_work.h>
-#include <linux/cred.h>
-#include <linux/fs.h>
-#include <linux/mount.h>
-#include <linux/namei.h>
-#include <linux/nsproxy.h>
-#include <linux/path.h>
-#include <linux/printk.h>
-#include <linux/types.h>
-
-#include "feature/kernel_umount.h"
-#include "klog.h" // IWYU pragma: keep
-#include "policy/allowlist.h"
-#include "selinux/selinux.h"
-#include "policy/feature.h"
-#include "runtime/ksud_boot.h"
-#include "ksu.h"
-
 static bool ksu_kernel_umount_enabled = true;
 
 static int kernel_umount_feature_get(u64 *value)
@@ -83,6 +63,11 @@ int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
         return 0;
     }
 
+    if (!ksu_cred) {
+        return 0;
+    }
+
+#ifndef CONFIG_KSU_SUSFS
     // There are 6 scenarios:
     // 1. Normal app: zygote -> appuid
     // 2. Isolated process forked from zygote: zygote -> isolated_process
@@ -107,6 +92,7 @@ int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
         pr_info("handle umount ignore non zygote child: %d\n", current->pid);
         return 0;
     }
+#endif
     // umount the target mnt
     pr_info("handle umount for uid: %d, pid: %d\n", new_uid, current->pid);
 
