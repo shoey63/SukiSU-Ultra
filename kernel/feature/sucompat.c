@@ -1,8 +1,9 @@
 #define SU_PATH "/system/bin/su"
 #define SH_PATH "/system/bin/sh"
 
-bool ksu_su_compat_enabled __read_mostly = true;
+#include "../hook/syscall_event_bridge.h"
 
+bool ksu_su_compat_enabled __read_mostly = true;
 static const char su_path[] = SU_PATH;
 static const char sh_path[] = SH_PATH;
 static const char ksud_path[] = KSUD_PATH;
@@ -90,11 +91,11 @@ int ksu_handle_execveat_init(struct filename *filename, struct user_arg_ptr *arg
 #ifdef CONFIG_KSU_FEATURE_ADBROOT
 #ifdef CONFIG_COMPAT
     if (unlikely(envp_user->is_compat))
-        ret = ksu_adb_root_handle_execve(filename->name, (void ***)&envp_user->ptr.compat);
+        ret = ksu_adb_root_handle_execve_manual(filename->name, (void ***)&envp_user->ptr.compat);
     else
-        ret = ksu_adb_root_handle_execve(filename->name, (void ***)&envp_user->ptr.native);
+        ret = ksu_adb_root_handle_execve_manual(filename->name, (void ***)&envp_user->ptr.native);
 #else
-        ret = ksu_adb_root_handle_execve(filename->name, (void ***)&envp_user->ptr.native);
+        ret = ksu_adb_root_handle_execve_manual(filename->name, (void ***)&envp_user->ptr.native);
 #endif
 #endif
 

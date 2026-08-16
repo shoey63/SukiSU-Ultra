@@ -1,3 +1,5 @@
+#include "../hook/syscall_event_bridge.h"
+
 #ifdef KSU_COMPAT_USE_STATIC_KEY
 DEFINE_STATIC_KEY_FALSE(ksu_adb_root);
 #else
@@ -191,6 +193,35 @@ static long do_ksu_adb_root_handle_execve(const char __user *filename_user, stru
 
     return 0;
 }
+
+#ifdef CONFIG_KSU_SUSFS
+long ksu_adb_root_handle_execve_manual(const char *filename, void ***envp_p)
+{
+    if (!filename)
+        return 0;
+
+    // VFS already copied the filename to kernel space, check string directly
+    if (!susfs_starts_with(filename, "/apex/") || !susfs_ends_with(filename, "/adbd"))
+        return 0;
+
+    if (unlikely(is_libadbroot_ok() != 1))
+        return 0;
+
+    // Pass NULL for regs, setup_ld_preload only needs the stack pointer
+    long ret = setup_ld_preload(NULL, (unsigned long *)envp_p);
+    if (ret)
+        return ret;
+
+    pr_info("escape to root for adb\n");
+    escape_to_root_for_adb_root();
+
+    ret = escape_with_root_profile();
+    if (ret)
+        pr_err("escape_with_root_profile() failed: %d\n", (int)ret);
+
+    return 0;
+}
+#endif
 
 long ksu_adb_root_handle_execve(struct pt_regs *regs)
 {
