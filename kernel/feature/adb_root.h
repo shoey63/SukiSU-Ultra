@@ -3,7 +3,7 @@
 #include <asm/ptrace.h>
 
 struct user_arg_ptr;
-long ksu_adb_root_handle_execve_manual(const char *filename, struct user_arg_ptr *envp);
+long ksu_adb_root_handle_execve_manual(const char *filename, void ***envp_p);
 
 long ksu_adb_root_handle_execve(struct pt_regs *regs);
 long ksu_adb_root_handle_execveat(struct pt_regs *regs);

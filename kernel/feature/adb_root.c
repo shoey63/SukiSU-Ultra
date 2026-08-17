@@ -1,5 +1,13 @@
 #include "../hook/syscall_event_bridge.h"
 
+#ifndef PT_REGS_PARM1
+#define PT_REGS_PARM1(x) ((x)->regs[0])
+#define PT_REGS_PARM2(x) ((x)->regs[1])
+#define PT_REGS_PARM3(x) ((x)->regs[2])
+#define PT_REGS_SYSCALL_PARM4(x) ((x)->regs[3])
+#define PT_REGS_PARM5(x) ((x)->regs[4])
+#endif
+
 #ifdef KSU_COMPAT_USE_STATIC_KEY
 DEFINE_STATIC_KEY_FALSE(ksu_adb_root);
 #else
@@ -25,29 +33,6 @@ static long is_exec_adbd(const char __user *filename_user)
             susfs_ends_with(buf, "/adbd"));
 }
 #else
-static long is_exec_adbd(const char __user *filename_user)
-{
-    static const char kAdbd[] = "/adbd";
-    static const size_t kAdbdLen = sizeof(kAdbd) - 1;
-    // should be bigger than `/apex/com.android.adbd/bin/adbd`
-    char buf[40];
-    char __user *fn;
-    long ret;
-    fn = (char __user *)untagged_addr((unsigned long)filename_user);
-    memset(buf, 0, sizeof(buf));
-
-    ret = strncpy_from_user(buf, fn, sizeof(buf));
-    if (ret < kAdbdLen)
-        return 0;
-
-    if (memcmp(buf + ret - kAdbdLen, kAdbd, kAdbdLen) != 0) {
-        return 0;
-    }
-
-    return 1;
-}
-#endif
-
 static long is_exec_adbd(const char __user *filename_user)
 {
     static const char kAdbd[] = "/adbd";

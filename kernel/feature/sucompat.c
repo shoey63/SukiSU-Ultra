@@ -76,6 +76,21 @@ static char __user *ksud_user_path(void)
     return userspace_stack_buffer(ksud_path, sizeof(ksud_path));
 }
 
+static char __user *empty_user_path(void)
+{
+    return userspace_stack_buffer("", 1);
+}
+
+static bool is_ksud_exists(void)
+{
+    struct path path;
+    if (kern_path(KSUD_PATH, 0, &path) == 0) {
+        path_put(&path);
+        return true;
+    }
+    return false;
+}
+
 #ifdef CONFIG_KSU_SUSFS
 extern const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr);
 /*
