@@ -221,7 +221,7 @@ long ksu_handle_newfstatat(int orig_nr, struct pt_regs *regs)
             pr_info("newfstatat su->ksud!\n");
             orig_filename = *filename_user;
             *filename_user = ksud_user_path();
-            ret = ksu_syscall_table[orig_nr](regs);
+            ret = 0;
             revert_creds(old_cred);
             *filename_user = orig_filename;
             return ret;
@@ -231,7 +231,7 @@ long ksu_handle_newfstatat(int orig_nr, struct pt_regs *regs)
     }
 
 do_orig_stat:
-    return ksu_syscall_table[orig_nr](regs);
+    return 0;
 }
 
 #ifdef KSU_COMPAT_USE_STATIC_KEY
@@ -392,7 +392,7 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
     }
 
 do_orig_execve:
-    return ksu_syscall_table[orig_nr](regs);
+    return 0;
 }
 
 long ksu_handle_execve_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
