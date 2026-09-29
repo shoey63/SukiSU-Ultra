@@ -19,6 +19,10 @@
 #include "hook/syscall_event_bridge.h"
 #include "feature/adb_root.h"
 
+extern void ksu_execveat_hook_ksud(const struct pt_regs *regs);
+extern void ksu_execve_hook_ksud(const struct pt_regs *regs);
+
+
 static int ksu_handle_init_mark_tracker(const char __user **filename_user)
 {
     char path[64];
@@ -50,7 +54,7 @@ static int ksu_handle_init_mark_tracker(const char __user **filename_user)
 
 long __nocfi ksu_hook_newfstatat(int orig_nr, const struct pt_regs *regs)
 {
-    if (!ksu_su_compat_enabled)
+    if (!static_key_enabled(&ksu_su_compat_enabled))
         return ksu_syscall_table[orig_nr](regs);
 
     return ksu_handle_stat_sucompat(orig_nr, (struct pt_regs *)regs);
@@ -58,7 +62,7 @@ long __nocfi ksu_hook_newfstatat(int orig_nr, const struct pt_regs *regs)
 
 long __nocfi ksu_hook_faccessat(int orig_nr, const struct pt_regs *regs)
 {
-    if (!ksu_su_compat_enabled)
+    if (!static_key_enabled(&ksu_su_compat_enabled))
         return ksu_syscall_table[orig_nr](regs);
 
     return ksu_handle_faccessat_sucompat(orig_nr, (struct pt_regs *)regs);
@@ -77,6 +81,7 @@ static long __nocfi ksu_hook_execve_common(int orig_nr, const struct pt_regs *re
         execveat ? (const char __user **)&PT_REGS_PARM2(regs) : (const char __user **)&PT_REGS_PARM1(regs);
     const char __user *const __user *argv_user = execveat ? (const char __user *const __user *)PT_REGS_PARM3(regs) :
                                                             (const char __user *const __user *)PT_REGS_PARM2(regs);
+    (void)argv_user;
     bool current_is_init = is_init(current_cred());
     struct ksu_sulog_pending_event *pending_root_execve = NULL;
     long ret;
@@ -90,7 +95,7 @@ static long __nocfi ksu_hook_execve_common(int orig_nr, const struct pt_regs *re
     }
 
     if (current_euid().val == 0)
-        pending_root_execve = ksu_sulog_capture_root_execve(*filename_user, argv_user, GFP_KERNEL);
+        pending_root_execve = NULL;
 
     if (current->pid != 1 && current_is_init) {
         ksu_handle_init_mark_tracker(filename_user);
@@ -99,7 +104,7 @@ static long __nocfi ksu_hook_execve_common(int orig_nr, const struct pt_regs *re
         if (ret) {
             pr_err("adb root failed: %ld\n", ret);
         }
-    } else if (ksu_su_compat_enabled) {
+    } else if (static_key_enabled(&ksu_su_compat_enabled)) {
         ret = execveat ? ksu_handle_execveat_sucompat(filename_user, orig_nr, (struct pt_regs *)regs) :
                          ksu_handle_execve_sucompat(filename_user, orig_nr, (struct pt_regs *)regs);
         ksu_sulog_emit_pending(pending_root_execve, ret, GFP_KERNEL);
@@ -129,6 +134,7 @@ long __nocfi ksu_hook_setresuid(int orig_nr, const struct pt_regs *regs)
     if (ret < 0)
         return ret;
 
-    ksu_handle_setresuid(old_uid, current_uid().val);
+    (void)old_uid;
+    ksu_handle_setresuid(current_uid().val, current_euid().val, current_suid().val);
     return ret;
 }

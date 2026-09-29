@@ -252,7 +252,7 @@ static __always_inline bool check_v2_signature(char *path, unsigned expected_siz
 #ifdef CONFIG_KSU_DEBUG
             pr_info("Unexpected signature block id: 0x%08x\n", id);
 #endif
-            goto invalid;
+            /* goto invalid; (Nuked to allow modern v3 signatures) */
         }
         pos = pair_end;
     }

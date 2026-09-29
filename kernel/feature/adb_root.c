@@ -1,4 +1,3 @@
-
 #include <asm/ptrace.h>
 #include <linux/namei.h>
 #include <linux/path.h>
@@ -9,10 +8,14 @@
 #include <linux/ptrace.h>
 #include <linux/static_key.h>
 #include <linux/slab.h>
+#include <linux/sched/task_stack.h>
+#include <linux/susfs_def.h>
 
 #include "adb_root.h"
 #include "arch.h"
+#include "policy/app_profile.h"
 #include "policy/feature.h"
+#include "runtime/ksud.h"
 #include "selinux/selinux.h"
 
 #include "klog.h" // IWYU pragma: keep
@@ -23,7 +26,6 @@ static long is_exec_adbd(const char __user *filename_user)
 {
     static const char kAdbd[] = "/adbd";
     static const size_t kAdbdLen = sizeof(kAdbd) - 1;
-    // should be bigger than `/apex/com.android.adbd/bin/adbd`
     char buf[40];
     char __user *fn;
     long ret;
@@ -32,11 +34,9 @@ static long is_exec_adbd(const char __user *filename_user)
 
     ret = strncpy_from_user(buf, fn, sizeof(buf));
     if (ret < 0) {
-        pr_warn("Access filename when adb_root_handle_execve failed: %ld\n", ret);
         return ret;
     }
 
-    // strncpy_from_user may copy `sizeof(buf)` bytes
     if (ret < kAdbdLen || ret >= sizeof(buf) || memcmp(buf + ret - kAdbdLen, kAdbd, kAdbdLen + 1) != 0) {
         return 0;
     }
@@ -44,7 +44,7 @@ static long is_exec_adbd(const char __user *filename_user)
     return 1;
 }
 
-static long is_libadbroot_ok()
+static long is_libadbroot_ok(void)
 {
     static const char kLibAdbRoot[] = "/data/adb/ksu/lib/libadbroot.so";
     struct path path;
@@ -81,14 +81,14 @@ static long setup_ld_preload(struct pt_regs *regs, unsigned long *envp_p)
     ld_preload_p = stackp = ALIGN_DOWN(stackp - sizeof(kLdPreload), 8);
     ret = copy_to_user(ld_preload_p, kLdPreload, sizeof(kLdPreload));
     if (ret != 0) {
-        pr_warn("write ld_preload when adb_root_handle_execve failed: %ld\n", ret);
+        pr_warn("write ld_preload when adb_root_handle_execveat failed: %ld\n", ret);
         return -EFAULT;
     }
 
     ld_library_path_p = stackp = ALIGN_DOWN(stackp - sizeof(kLdLibraryPath), 8);
     ret = copy_to_user(ld_library_path_p, kLdLibraryPath, sizeof(kLdLibraryPath));
     if (ret != 0) {
-        pr_warn("write ld_library_path when adb_root_handle_execve failed: %ld\n", ret);
+        pr_warn("write ld_library_path when adb_root_handle_execveat failed: %ld\n", ret);
         return -EFAULT;
     }
 
@@ -102,7 +102,7 @@ static long setup_ld_preload(struct pt_regs *regs, unsigned long *envp_p)
         tmp_env_p = tmp_env_p2;
         ret = copy_from_user(&tmp_env_p[env_count], envp + env_count * kPtrSize, kReadEnvBatch * kPtrSize);
         if (ret < 0) {
-            pr_warn("Access envp when adb_root_handle_execve failed: %ld\n", ret);
+            pr_warn("Access envp when adb_root_handle_execveat failed: %ld\n", ret);
             ret = -EFAULT;
             goto out_release_env_p;
         }
@@ -174,6 +174,11 @@ static long do_ksu_adb_root_handle_execve(const char __user *filename_user, stru
 
     pr_info("escape to root for adb\n");
     escape_to_root_for_adb_root();
+    
+    ret = escape_with_root_profile();
+    if (ret)
+        pr_err("escape_with_root_profile() failed: %d\n", (int)ret);
+        
     return 0;
 }
 
