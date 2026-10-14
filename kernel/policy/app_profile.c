@@ -1,3 +1,6 @@
+#include "hook/patch_memory.h"
+#include "infra/symbol_resolver.h"
+#include "linux/kallsyms.h"
 #include <linux/capability.h>
 #include <linux/cred.h>
 #include <linux/sched.h>
@@ -16,6 +19,7 @@
 #include "klog.h" // IWYU pragma: keep
 #include "selinux/selinux.h"
 #include "infra/su_mount_ns.h"
+#include "hook/tp_marker.h"
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
 static struct group_info root_groups = { .usage = REFCOUNT_INIT(2) };
@@ -64,7 +68,18 @@ void setup_groups(struct root_profile *profile, struct cred *cred)
 
 void seccomp_filter_release(struct task_struct *tsk);
 
-void disable_seccomp(void)
+// https://cs.android.com/android/_/android/kernel/common/+/5346453405bf12d7ed6003f45dd47b71744fe1be
+// Some 15-6.6 kernel have this backport while others don't have, e.g. Pixel 10
+// See also:
+// https://github.com/tiann/KernelSU/issues/3629
+#define NEED_BACKPORT_COMPAT                                                                                           \
+    LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+
+#if NEED_BACKPORT_COMPAT
+static bool has_call_to_spin_lock = false;
+#endif
+
+static void disable_seccomp(void)
 {
     struct task_struct *fake;
 
@@ -91,9 +106,15 @@ void disable_seccomp(void)
     atomic_set(&current->seccomp.filter_count, 0);
     spin_unlock_irq(&current->sighand->siglock);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
     // https://github.com/torvalds/linux/commit/bfafe5efa9754ebc991750da0bcca2a6694f3ed3#diff-45eb79a57536d8eccfc1436932f093eb5c0b60d9361c39edb46581ad313e8987R576-R577
     fake->flags |= PF_EXITING;
+#elif NEED_BACKPORT_COMPAT
+    if (has_call_to_spin_lock) {
+        fake->flags |= PF_EXITING;
+    } else {
+        fake->sighand = NULL;
+    }
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
     // https://github.com/torvalds/linux/commit/0d8315dddd2899f519fe1ca3d4d5cdaf44ea421e#diff-45eb79a57536d8eccfc1436932f093eb5c0b60d9361c39edb46581ad313e8987R556-R558
     fake->sighand = NULL;
@@ -107,6 +128,8 @@ int escape_with_root_profile(void)
 {
     int ret = 0;
     struct cred *cred;
+    struct task_struct *p = current;
+    struct task_struct *t;
     struct root_profile *profile = NULL;
     struct user_struct *new_user;
 
@@ -114,6 +137,11 @@ int escape_with_root_profile(void)
     if (!cred) {
         pr_warn("prepare_creds failed!\n");
         return -ENOMEM;
+    }
+
+    if (cred->euid.val == 0) {
+        pr_warn("Already root, don't escape!\n");
+        goto out_abort_creds;
     }
 
     if (test_thread_flag(TIF_KSU_DISABLE_ESCAPE_WITH_ROOT)) {
@@ -165,11 +193,7 @@ int escape_with_root_profile(void)
     }
 #endif
 
-    // setup capabilities
-    // we need CAP_DAC_READ_SEARCH becuase `/data/adb/ksud` is not accessible for non root process
-    // we add it here but don't add it to cap_inhertiable, it would be dropped automaticly after exec!
-    u64 cap_for_ksud = profile->capabilities.effective | CAP_DAC_READ_SEARCH;
-    memcpy(&cred->cap_effective, &cap_for_ksud, sizeof(cred->cap_effective));
+    memcpy(&cred->cap_effective, &profile->capabilities.effective, sizeof(cred->cap_effective));
     memcpy(&cred->cap_permitted, &profile->capabilities.effective, sizeof(cred->cap_permitted));
     memcpy(&cred->cap_bset, &profile->capabilities.effective, sizeof(cred->cap_bset));
     if (profile->uid != 0) {
@@ -182,11 +206,14 @@ int escape_with_root_profile(void)
 
     commit_creds(cred);
 
-    if (likely(test_thread_flag(TIF_SECCOMP)))
-        disable_seccomp();
+    disable_seccomp();
 
     if (profile->flags & FLAG_KSU_NO_NEW_PRIVS) {
         set_thread_flag(TIF_KSU_DISABLE_ESCAPE_WITH_ROOT);
+    }
+
+    for_each_thread (p, t) {
+        ksu_set_task_tracepoint_flag(t);
     }
 
     setup_mount_ns(profile->namespaces);
@@ -200,18 +227,16 @@ out_abort_creds:
     return ret;
 }
 
-int escape_to_root_for_init(void)
+void escape_to_root_for_init(void)
 {
     struct cred *cred = prepare_creds();
     if (!cred) {
         pr_err("Failed to prepare init's creds!\n");
-        return -EINVAL;
+        return;
     }
 
     setup_selinux(KERNEL_SU_CONTEXT, cred);
     commit_creds(cred);
-
-    return 0;
 }
 
 void __init ksu_app_profile_init(void)
