@@ -6,6 +6,7 @@
 #include <linux/sched.h>
 #include <linux/workqueue.h>
 #include <linux/moduleparam.h>
+#include <linux/susfs.h>
 
 #include "policy/allowlist.h"
 #include "policy/app_profile.h"
@@ -13,13 +14,12 @@
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_observer.h"
 #include "manager/throne_tracker.h"
-#include "hook/syscall_hook_manager.h"
-#include "hook/lsm_hook.h"
 #include "runtime/ksud.h"
 #include "runtime/ksud_boot.h"
 #include "feature/sulog.h"
 #include "supercall/supercall.h"
 #include "ksu.h"
+extern void susfs_init(void);
 #include "infra/file_wrapper.h"
 #include "selinux/selinux.h"
 #include "hook/syscall_hook.h"
@@ -74,7 +74,6 @@ __attribute__((naked)) int __init kernelsu_init_early(void)
 #endif
 
 struct cred *ksu_cred;
-bool ksu_late_loaded;
 
 #ifdef CONFIG_KSU_DEBUG
 bool allow_shell = true;
@@ -130,6 +129,7 @@ int __init kernelsu_init(void)
     pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
     pr_alert("*************************************************************");
 #endif
+
     if (allow_shell) {
         pr_alert("shell is allowed at init!");
     }
@@ -230,11 +230,15 @@ void __exit kernelsu_exit(void)
     ksu_allowlist_exit();
 
     ksu_shell_su_adb_only_exit();
+
     ksu_selinux_hide_exit();
-    ksu_lsm_hook_exit();
+
     ksu_adb_root_exit();
+
     ksu_sulog_exit();
+
     ksu_feature_exit();
+
     ksu_module_blacklist_exit();
 
     put_cred(ksu_cred);
