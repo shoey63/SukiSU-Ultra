@@ -11,6 +11,7 @@
 #include <linux/fs.h>
 #include <linux/version.h>
 #include <linux/input-event-codes.h>
+#include <linux/kprobes.h>
 #include <linux/printk.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
@@ -27,11 +28,8 @@
 #include "policy/feature.h"
 #include "feature/module_blacklist.h"
 #include "selinux/selinux.h"
-
-DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);
-DEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);
-DEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);
-DEFINE_STATIC_KEY_TRUE(is_first_zygote);
+#include "hook/syscall_hook.h"
+#include "hook/syscall_event_bridge.h"
 
 // clang-format off
 static const char KERNEL_SU_RC[] =
@@ -53,25 +51,43 @@ static const char KERNEL_SU_RC[] =
     "\n";
 // clang-format on
 
+static void stop_init_rc_hook();
+static void stop_execve_hook();
+
+static struct work_struct stop_input_hook_work;
+
+#define MAX_ARG_STRINGS 0x7FFFFFFF
+struct user_arg_ptr {
+#ifdef CONFIG_COMPAT
+    bool is_compat;
+#endif
+    union {
+        const char __user *const __user *native;
+#ifdef CONFIG_COMPAT
+        const compat_uptr_t __user *compat;
+#endif
+    } ptr;
+};
+
 static const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr)
 {
-	const char __user *native;
+    const char __user *native;
 
 #ifdef CONFIG_COMPAT
-	if (unlikely(argv.is_compat)) {
-		compat_uptr_t compat;
+    if (unlikely(argv.is_compat)) {
+        compat_uptr_t compat;
 
-		if (get_user(compat, argv.ptr.compat + nr))
-			return ERR_PTR(-EFAULT);
+        if (get_user(compat, argv.ptr.compat + nr))
+            return ERR_PTR(-EFAULT);
 
-		return compat_ptr(compat);
-	}
+        return compat_ptr(compat);
+    }
 #endif
 
-	if (get_user(native, argv.ptr.native + nr))
-		return ERR_PTR(-EFAULT);
+    if (get_user(native, argv.ptr.native + nr))
+        return ERR_PTR(-EFAULT);
 
-	return native;
+    return native;
 }
 
 /*
@@ -121,7 +137,7 @@ static bool check_argv(struct user_arg_ptr argv, int index, const char *expected
     if (!p || IS_ERR(p))
         goto fail;
 
-    if (strncpy_from_user(buf, p, buf_len) <= 0)
+    if (strncpy_from_user_nofault(buf, p, buf_len) <= 0)
         goto fail;
 
     buf[buf_len - 1] = '\0';
@@ -425,16 +441,13 @@ static void ksu_install_rc_hook(struct file *file)
         return;
     }
     rc_hooked = true;
-
-    if (static_key_enabled(&ksu_is_init_rc_hook_enabled)) {
-        static_branch_disable(&ksu_is_init_rc_hook_enabled);
-        pr_info("ksu_init_rc_hook is disabled\n");
-    }
+    stop_init_rc_hook();
 
     // now we can sure that the init process is reading
     // `/system/etc/init/init.rc`
 
     load_module_rc_once();
+
     pr_info("read init.rc, comm: %s, rc_count: %zu, module_rc: %zu\n", current->comm, ksu_rc_len, module_rc_len);
 
     // Now we need to proxy the read and modify the result!
@@ -453,7 +466,7 @@ static void ksu_install_rc_hook(struct file *file)
     file->f_op = &fops_proxy;
 }
 
-void ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr)
+static void ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr)
 {
     struct file *file = fget(fd);
     if (!file) {
@@ -476,13 +489,11 @@ int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *v
         int val = *value;
         pr_info("KEY_VOLUMEDOWN val: %d\n", val);
         if (val) {
-	    // - We cannot call static_branch_disable() here as we are within the
-	    //   spinlock section, which is not sleepable.
-            // - So if volumedown is enough, just do nothing until it gets disabled by on_post_fs_data().
-            if (is_volumedown_enough(volumedown_pressed_count))
-                return 0;
             // key pressed, count it
             volumedown_pressed_count += 1;
+            if (is_volumedown_enough(volumedown_pressed_count)) {
+                ksu_stop_input_hook_runtime();
+            }
         }
     }
 
@@ -497,11 +508,12 @@ bool ksu_is_safe_mode()
         return true;
     }
 
-    // stop hook first!
-    if (static_key_enabled(&ksu_is_input_hook_enabled)) {
-        static_branch_disable(&ksu_is_input_hook_enabled);
-        pr_info("ksu_input_hook is disabled\n");
+    if (ksu_late_loaded) {
+        return false;
     }
+
+    // stop hook first!
+    ksu_stop_input_hook_runtime();
 
     pr_info("volumedown_pressed_count: %d\n", volumedown_pressed_count);
     if (is_volumedown_enough(volumedown_pressed_count)) {
@@ -514,13 +526,66 @@ bool ksu_is_safe_mode()
     return false;
 }
 
-void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
+static void ksu_execve_hook_ksud_common(const char __user *filename_user, const char __user *const __user *argv_user)
 {
-    loff_t orig_size = *kstat_size_ptr;
-    size_t extra = 0;
-    bool is_rc = false;
-    struct file *file = fget(fd);
+    struct user_arg_ptr argv = { .ptr.native = argv_user };
+    char path[32];
+    long ret;
+    unsigned long addr;
+    const char __user *fn;
 
+    if (!filename_user)
+        return;
+
+    addr = untagged_addr((unsigned long)filename_user);
+    fn = (const char __user *)addr;
+
+    memset(path, 0, sizeof(path));
+    ret = strncpy_from_user(path, fn, 32);
+    if (ret < 0) {
+        pr_err("Access filename failed for execve_handler_pre\n");
+        return;
+    }
+
+    ksu_handle_execveat_ksud(path, &argv);
+}
+
+void ksu_execve_hook_ksud(const struct pt_regs *regs)
+{
+    const char __user *filename_user = (const char __user *)PT_REGS_SYSCALL_PARM1(regs);
+    const char __user *const __user *argv_user = (const char __user *const __user *)PT_REGS_PARM2(regs);
+
+    ksu_execve_hook_ksud_common(filename_user, argv_user);
+}
+
+void ksu_execveat_hook_ksud(const struct pt_regs *regs)
+{
+    const char __user *filename_user = (const char __user *)PT_REGS_PARM2(regs);
+    const char __user *const __user *argv_user = (const char __user *const __user *)PT_REGS_PARM3(regs);
+
+    ksu_execve_hook_ksud_common(filename_user, argv_user);
+}
+
+static long (*orig_sys_read)(const struct pt_regs *regs);
+static long ksu_sys_read(const struct pt_regs *regs)
+{
+    unsigned int fd = PT_REGS_SYSCALL_PARM1(regs);
+    char __user **buf_ptr = (char __user **)&PT_REGS_PARM2(regs);
+    size_t *count_ptr = (size_t *)&PT_REGS_PARM3(regs);
+
+    ksu_handle_sys_read(fd, buf_ptr, count_ptr);
+    return orig_sys_read(regs);
+}
+
+static long (*orig_sys_fstat)(const struct pt_regs *regs);
+static long ksu_sys_fstat(const struct pt_regs *regs)
+{
+    unsigned int fd = PT_REGS_SYSCALL_PARM1(regs);
+    void __user *statbuf = (void __user *)PT_REGS_PARM2(regs);
+    bool is_rc = false;
+    long ret;
+
+    struct file *file = fget(fd);
     if (file) {
         if (is_init_rc(file)) {
             pr_info("stat init.rc");
@@ -530,20 +595,85 @@ void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
         fput(file);
     }
 
+    ret = orig_sys_fstat(regs);
+
     if (is_rc) {
-        extra = ksu_rc_len + module_rc_len;
-        *kstat_size_ptr = orig_size + extra;
-        pr_info("adding rc len: %lld -> %lld (static=%zu module=%zu)", orig_size, *kstat_size_ptr, ksu_rc_len, module_rc_len);
+        void __user *st_size_ptr = statbuf + offsetof(struct stat, st_size);
+        long size, new_size;
+        size_t extra = ksu_rc_len + module_rc_len;
+        if (!copy_from_user_nofault(&size, st_size_ptr, sizeof(long))) {
+            new_size = size + extra;
+            pr_info("adding rc len: %ld -> %ld (static=%zu module=%zu)", size, new_size, ksu_rc_len, module_rc_len);
+            if (!copy_to_user_nofault(st_size_ptr, &new_size, sizeof(long))) {
+                pr_info("added rc len");
+            } else {
+                pr_err("add rc len failed: statbuf 0x%lx", (unsigned long)st_size_ptr);
+            }
+        } else {
+            pr_err("read statbuf 0x%lx failed", (unsigned long)st_size_ptr);
+        }
     }
+
+    return ret;
+}
+
+static int input_handle_event_handler_pre(struct kprobe *p, struct pt_regs *regs)
+{
+    unsigned int *type = (unsigned int *)&PT_REGS_PARM2(regs);
+    unsigned int *code = (unsigned int *)&PT_REGS_PARM3(regs);
+    int *value = (int *)&PT_REGS_CCALL_PARM4(regs);
+    return ksu_handle_input_handle_event(type, code, value);
+}
+
+static struct kprobe input_event_kp = {
+    .symbol_name = "input_event",
+    .pre_handler = input_handle_event_handler_pre,
+};
+
+static void do_stop_input_hook(struct work_struct *work)
+{
+    unregister_kprobe(&input_event_kp);
+}
+
+static void stop_init_rc_hook()
+{
+    ksu_syscall_table_unhook(__NR_read);
+    ksu_syscall_table_unhook(__NR_fstat);
+    pr_info("unregister init_rc syscall hook\n");
+}
+
+void ksu_stop_input_hook_runtime(void)
+{
+    static bool input_hook_stopped = false;
+    if (input_hook_stopped) {
+        return;
+    }
+    input_hook_stopped = true;
+    bool ret = schedule_work(&stop_input_hook_work);
+    pr_info("unregister input kprobe: %d!\n", ret);
 }
 
 // ksud: module support
 void __init ksu_ksud_init()
 {
+    int ret;
+
+    ksu_syscall_table_hook(__NR_read, ksu_sys_read, &orig_sys_read);
+    ksu_syscall_table_hook(__NR_fstat, ksu_sys_fstat, &orig_sys_fstat);
+
+    ret = register_kprobe(&input_event_kp);
+    pr_info("ksud: input_event_kp: %d\n", ret);
+
+    INIT_WORK(&stop_input_hook_work, do_stop_input_hook);
 }
 
 void __exit ksu_ksud_exit()
 {
+    // TODO:
+    // this should be done before unregister vfs_read_kp
+    // stop_init_rc_hook();
+    unregister_kprobe(&input_event_kp);
+
     if (module_rc_buf) {
         free_module_rc();
     }
