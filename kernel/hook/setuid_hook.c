@@ -96,7 +96,7 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 do_umount:
 #endif
     // Handle kernel umount
-    ksu_handle_umount(old_uid, new_uid);
+    sukisu_handle_umount(old_uid, new_uid);
 
 #ifdef CONFIG_KSU_SUSFS
     if (is_zygote || is_zygote_next) {

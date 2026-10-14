@@ -269,3 +269,6 @@ __attribute__((weak)) void ksu_handle_vfs_fstat(int a, void *b) {}
 __attribute__((weak)) void ksu_handle_sys_read(unsigned int a, void *b, void *c) {}
 __attribute__((weak)) int ksu_is_input_hook_enabled(void) { return 0; }
 __attribute__((weak)) int ksu_is_init_rc_hook_enabled(void) { return 0; }
+
+/* Absorb vanilla KSU umount patch from core kernel to prevent LLVM LTO traps */
+__attribute__((weak)) void ksu_handle_umount(void) {}

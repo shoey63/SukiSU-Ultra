@@ -72,7 +72,7 @@ struct umount_tw {
     struct callback_head cb;
 };
 
-int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
+int sukisu_handle_umount(uid_t old_uid, uid_t new_uid)
 {
     // if there isn't any module mounted, just ignore it!
     if (!ksu_module_mounted) {
