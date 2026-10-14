@@ -260,3 +260,12 @@ MODULE_IMPORT_NS("VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
 #else
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 #endif
+
+/* Universal weak stubs to absorb vanilla KernelSU VFS hooks from the patched core kernel tree */
+__attribute__((weak)) int ksu_handle_execveat(void *a, void *b, void *c, void *d, void *e) { return 0; }
+__attribute__((weak)) int ksu_handle_faccessat(void *a, void *b, void *c, void *d) { return 0; }
+__attribute__((weak)) int ksu_handle_stat(void *a, void *b, void *c) { return 0; }
+__attribute__((weak)) void ksu_handle_vfs_fstat(int a, void *b) {}
+__attribute__((weak)) void ksu_handle_sys_read(unsigned int a, void *b, void *c) {}
+__attribute__((weak)) int ksu_is_input_hook_enabled(void) { return 0; }
+__attribute__((weak)) int ksu_is_init_rc_hook_enabled(void) { return 0; }
