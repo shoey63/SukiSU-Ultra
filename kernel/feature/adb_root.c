@@ -9,29 +9,37 @@
 #include <linux/ptrace.h>
 #include <linux/static_key.h>
 #include <linux/slab.h>
-#include <linux/sched/task_stack.h>
-#include <linux/susfs_def.h>
 
 #include "adb_root.h"
 #include "arch.h"
-#include "policy/app_profile.h"
 #include "policy/feature.h"
+#include <linux/susfs_def.h>
 #include "selinux/selinux.h"
 
 #include "klog.h" // IWYU pragma: keep
 
 DEFINE_STATIC_KEY_FALSE(ksu_adb_root);
 
-static inline long is_exec_adbd(const char *filename)
+static long is_exec_adbd(const char __user *filename_user)
 {
-    if (strstr(filename, "adbd"))
-        pr_info("is_exec_adbd() => filename: %s\n", filename);
+    char buf[256];
+    char __user *fn;
+    long ret;
+    fn = (char __user *)untagged_addr((unsigned long)filename_user);
+    memset(buf, 0, sizeof(buf));
 
-    return (susfs_starts_with(filename, "/apex/") &&
-                susfs_ends_with(filename, "/adbd"));
+    ret = strncpy_from_user(buf, fn, sizeof(buf));
+    if (ret < 0) return ret;
+
+#ifdef CONFIG_KSU_SUSFS
+    return (susfs_starts_with(buf, "/apex/") && susfs_ends_with(buf, "/adbd"));
+#else
+    if (ret < 5 || ret >= sizeof(buf) || memcmp(buf + ret - 5, "/adbd", 6) != 0) return 0;
+    return 1;
+#endif
 }
 
-static long is_libadbroot_ok(void)
+static long is_libadbroot_ok()
 {
     static const char kLibAdbRoot[] = "/data/adb/ksu/lib/libadbroot.so";
     struct path path;
@@ -51,16 +59,14 @@ static long is_libadbroot_ok(void)
     return ret;
 }
 
-static long setup_ld_preload(void ***envp_user_ptr)
-//static long setup_ld_preload(struct pt_regs *regs)
+static long setup_ld_preload(struct pt_regs *regs, unsigned long *envp_p)
 {
     static const char kLdPreload[] = "LD_PRELOAD=/data/adb/ksu/lib/libadbroot.so";
     static const char kLdLibraryPath[] = "LD_LIBRARY_PATH=/data/adb/ksu/lib";
     static const size_t kReadEnvBatch = 16;
     static const size_t kPtrSize = sizeof(unsigned long);
-    unsigned long stackp = current_user_stack_pointer();
+    unsigned long stackp = user_stack_pointer(regs);
     unsigned long envp, ld_preload_p, ld_library_path_p;
-    unsigned long *envp_p = (unsigned long)envp_user_ptr;
     unsigned long *tmp_env_p = NULL, *tmp_env_p2 = NULL;
     size_t env_count = 0, total_size;
     long ret;
@@ -70,14 +76,14 @@ static long setup_ld_preload(void ***envp_user_ptr)
     ld_preload_p = stackp = ALIGN_DOWN(stackp - sizeof(kLdPreload), 8);
     ret = copy_to_user(ld_preload_p, kLdPreload, sizeof(kLdPreload));
     if (ret != 0) {
-        pr_warn("write ld_preload when adb_root_handle_execveat failed: %ld\n", ret);
+        pr_warn("write ld_preload when adb_root_handle_execve failed: %ld\n", ret);
         return -EFAULT;
     }
 
     ld_library_path_p = stackp = ALIGN_DOWN(stackp - sizeof(kLdLibraryPath), 8);
     ret = copy_to_user(ld_library_path_p, kLdLibraryPath, sizeof(kLdLibraryPath));
     if (ret != 0) {
-        pr_warn("write ld_library_path when adb_root_handle_execveat failed: %ld\n", ret);
+        pr_warn("write ld_library_path when adb_root_handle_execve failed: %ld\n", ret);
         return -EFAULT;
     }
 
@@ -91,7 +97,7 @@ static long setup_ld_preload(void ***envp_user_ptr)
         tmp_env_p = tmp_env_p2;
         ret = copy_from_user(&tmp_env_p[env_count], envp + env_count * kPtrSize, kReadEnvBatch * kPtrSize);
         if (ret < 0) {
-            pr_warn("Access envp when adb_root_handle_execveat failed: %ld\n", ret);
+            pr_warn("Access envp when adb_root_handle_execve failed: %ld\n", ret);
             ret = -EFAULT;
             goto out_release_env_p;
         }
@@ -146,9 +152,9 @@ out_release_env_p:
     return ret;
 }
 
-static long do_ksu_adb_root_handle_execveat(const char *filename, void ***envp_user_ptr)
+static long do_ksu_adb_root_handle_execve(const char __user *filename_user, struct pt_regs *regs, unsigned long *envp_p)
 {
-    if (likely(is_exec_adbd(filename) != 1)) {
+    if (likely(is_exec_adbd(filename_user) != 1)) {
         return 0;
     }
 
@@ -156,25 +162,30 @@ static long do_ksu_adb_root_handle_execveat(const char *filename, void ***envp_u
         return 0;
     }
 
-    long ret = setup_ld_preload(envp_user_ptr);
+    long ret = setup_ld_preload(regs, envp_p);
     if (ret) {
         return ret;
     }
 
     pr_info("escape to root for adb\n");
     escape_to_root_for_adb_root();
-
-    ret = escape_with_root_profile();
-    if (ret)
-        pr_err("escape_with_root_profile() failed: %d\n", (int)ret);
-
     return 0;
 }
 
-long ksu_adb_root_handle_execveat(const char *filename, void ***envp_user_ptr)
+long ksu_adb_root_handle_execve(struct pt_regs *regs)
 {
     if (static_branch_unlikely(&ksu_adb_root)) {
-        return do_ksu_adb_root_handle_execveat(filename, envp_user_ptr);
+        return do_ksu_adb_root_handle_execve((const char __user *)PT_REGS_SYSCALL_PARM1(regs), regs,
+                                             (unsigned long *)&PT_REGS_PARM3(regs));
+    }
+    return 0;
+}
+
+long ksu_adb_root_handle_execveat(struct pt_regs *regs)
+{
+    if (static_branch_unlikely(&ksu_adb_root)) {
+        return do_ksu_adb_root_handle_execve((const char __user *)PT_REGS_PARM2(regs), regs,
+                                             (unsigned long *)&PT_REGS_SYSCALL_PARM4(regs));
     }
     return 0;
 }
