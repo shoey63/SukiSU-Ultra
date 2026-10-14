@@ -12,6 +12,7 @@
 #include <linux/uaccess.h>
 #include <linux/uidgid.h>
 #include <linux/susfs_def.h>
+#include "selinux/selinux.h"
 
 #include "policy/allowlist.h"
 #include "hook/setuid_hook.h"
