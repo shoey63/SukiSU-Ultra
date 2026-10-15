@@ -100,8 +100,8 @@ static long __nocfi ksu_hook_execve_common(int orig_nr, const struct pt_regs *re
             pr_err("adb root failed: %ld\n", ret);
         }
     } else if (ksu_su_compat_enabled) {
-        ret = execveat ? ksu_handle_execveat_sucompat(filename_user, orig_nr, (struct pt_regs *)regs) :
-                         ksu_handle_execve_sucompat(filename_user, orig_nr, (struct pt_regs *)regs);
+        ret = execveat ? sukisu_sys_execveat_sucompat(filename_user, orig_nr, (struct pt_regs *)regs) :
+                         sukisu_sys_execve_sucompat(filename_user, orig_nr, (struct pt_regs *)regs);
         ksu_sulog_emit_pending(pending_root_execve, ret, GFP_KERNEL);
         return ret;
     }
