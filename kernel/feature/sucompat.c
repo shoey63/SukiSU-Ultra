@@ -26,6 +26,7 @@
 #include "supercall/supercall.h"
 #include "sulog/event.h"
 #include "ksu.h"
+#include <linux/susfs_def.h>
 #include "util.h"
 
 #define SU_PATH "/system/bin/su"
@@ -192,8 +193,14 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
         goto do_orig_execve;
     }
 
-    if (likely(memcmp(path, su_path, sizeof(su_path))))
+    if (likely(memcmp(path, su_path, sizeof(su_path)))) {
+#ifdef CONFIG_KSU_SUSFS
+        if (likely(!strstr(path, "/app_process") && !strstr(path, "/adbd") && !strstr(path, "/stub_zygote"))) {
+            susfs_set_current_proc_no_su();
+        }
+#endif
         goto do_orig_execve;
+    }
 
     pr_info("sys_execve su found\n");
 
