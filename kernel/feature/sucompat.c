@@ -176,7 +176,7 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
     if (execveat && ((int)PT_REGS_SYSCALL_PARM1(regs) != AT_FDCWD || (int)PT_REGS_PARM5(regs) != 0))
         goto do_orig_execve;
 
-    if (unlikely(!filename_user))
+    if (unlikely(!filename_user || !*filename_user))
         goto do_orig_execve;
 
     if (!ksu_is_allow_uid_for_current(current_uid().val))
