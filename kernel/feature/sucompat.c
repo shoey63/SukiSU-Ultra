@@ -159,7 +159,7 @@ do_orig_stat:
     return ksu_syscall_table[orig_nr](regs);
 }
 
-static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
+static long sukisu_sys_execve_sucompat_common(const char __user **filename_user,
                                               const char __user *const __user *argv_user, unsigned long envp,
                                               bool execveat, int orig_nr, struct pt_regs *regs)
 {
@@ -263,15 +263,15 @@ do_orig_execve:
     return ksu_syscall_table[orig_nr](regs);
 }
 
-long ksu_handle_execve_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
+long sukisu_sys_execve_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
 {
-    return ksu_handle_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM2(regs),
+    return sukisu_sys_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM2(regs),
                                              PT_REGS_PARM3(regs), false, orig_nr, regs);
 }
 
-long ksu_handle_execveat_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
+long sukisu_sys_execveat_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
 {
-    return ksu_handle_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM3(regs),
+    return sukisu_sys_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM3(regs),
                                              PT_REGS_SYSCALL_PARM4(regs), true, orig_nr, regs);
 }
 
@@ -287,3 +287,7 @@ void __exit ksu_sucompat_exit()
 {
     ksu_unregister_feature_handler(KSU_FEATURE_SU_COMPAT);
 }
+
+/* Absorb legacy VFS hooks from fs/exec.c to prevent pt_regs linker collision panics */
+bool ksu_handle_execveat_sucompat(int *fd, void *filename_ptr, void *argv, void *envp, int *flags) { return false; }
+bool ksu_handle_execve_sucompat(int *fd, void *filename_ptr, void *argv, void *envp, int *flags) { return false; }
