@@ -11,6 +11,8 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/uidgid.h>
+#include <linux/susfs_def.h>
+#include "selinux/selinux.h"
 
 #include "policy/allowlist.h"
 #include "hook/setuid_hook.h"
@@ -22,11 +24,47 @@
 #include "feature/kernel_umount.h"
 #include "feature/mount_hide.h"
 
+#ifdef CONFIG_KSU_SUSFS
+extern u32 susfs_zygote_sid;
+extern u32 susfs_zygote_next_sid;
+extern struct work_struct susfs_extra_works;
+
+static inline void ksu_handle_extra_susfs_work(void)
+{
+    if (work_pending(&susfs_extra_works))
+        return;
+    schedule_work(&susfs_extra_works);
+}
+#endif
+
 int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 {
     // we rely on the fact that zygote always call setresuid(3) with same uids
-
     pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
+
+#ifdef CONFIG_KSU_SUSFS
+    bool is_zygote = false;
+    bool is_zygote_next = false;
+    
+    if (current_uid().val == 0) {
+        if (susfs_is_sid_equal(current_cred(), susfs_zygote_sid)) {
+            is_zygote = true;
+        } else if (susfs_is_sid_equal(current_cred(), susfs_zygote_next_sid)) {
+            is_zygote_next = true;
+        }
+    }
+
+    if (is_zygote || is_zygote_next) {
+        if (is_isolated_process(new_uid) || (likely(is_appuid(new_uid)) && ksu_uid_should_umount(new_uid))) {
+            susfs_set_current_proc_no_su();
+            susfs_set_current_proc_umounted();
+            if (is_zygote_next) {
+                susfs_set_current_proc_umounted_for_zygote_next();
+            }
+            goto do_umount;
+        }
+    }
+#endif
 
     if (unlikely(is_uid_manager(new_uid))) {
         spin_lock_irq(&current->sighand->siglock);
@@ -48,10 +86,24 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
         ksu_set_task_tracepoint_flag(current);
     } else {
         ksu_clear_task_tracepoint_flag_if_needed(current);
+#ifdef CONFIG_KSU_SUSFS
+        if (is_zygote || is_zygote_next) {
+            susfs_set_current_proc_no_su();
+        }
+#endif
     }
 
+#ifdef CONFIG_KSU_SUSFS
+do_umount:
+#endif
     // Handle kernel umount
-    ksu_handle_umount(old_uid, new_uid);
+    sukisu_handle_umount(old_uid, new_uid);
+
+#ifdef CONFIG_KSU_SUSFS
+    if (is_zygote || is_zygote_next) {
+        ksu_handle_extra_susfs_work();
+    }
+#endif
 
     return 0;
 }
