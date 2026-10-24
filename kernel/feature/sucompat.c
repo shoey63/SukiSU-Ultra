@@ -26,6 +26,7 @@
 #include "supercall/supercall.h"
 #include "sulog/event.h"
 #include "ksu.h"
+#include <linux/susfs_def.h>
 #include "util.h"
 
 #define SU_PATH "/system/bin/su"
@@ -149,7 +150,7 @@ do_orig_stat:
     return ksu_syscall_table[orig_nr](regs);
 }
 
-static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
+static long sukisu_sys_execve_sucompat_common(const char __user **filename_user,
                                               const char __user *const __user *argv_user, unsigned long envp,
                                               bool execveat, int orig_nr, struct pt_regs *regs)
 {
@@ -166,7 +167,7 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
     if (execveat && ((int)PT_REGS_SYSCALL_PARM1(regs) != AT_FDCWD || (int)PT_REGS_PARM5(regs) != 0))
         goto do_orig_execve;
 
-    if (unlikely(!filename_user))
+    if (unlikely(!filename_user || !*filename_user))
         goto do_orig_execve;
 
     if (!ksu_is_allow_uid_for_current(current_uid().val))
@@ -183,8 +184,14 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
         goto do_orig_execve;
     }
 
-    if (likely(memcmp(path, su_path, sizeof(su_path))))
+    if (likely(memcmp(path, su_path, sizeof(su_path)))) {
+#ifdef CONFIG_KSU_SUSFS
+        if (likely(!strstr(path, "/app_process") && !strstr(path, "/adbd") && !strstr(path, "/stub_zygote"))) {
+            susfs_set_current_proc_no_su();
+        }
+#endif
         goto do_orig_execve;
+    }
 
     pr_info("sys_execve su found\n");
 
@@ -247,15 +254,15 @@ do_orig_execve:
     return ksu_syscall_table[orig_nr](regs);
 }
 
-long ksu_handle_execve_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
+long sukisu_sys_execve_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
 {
-    return ksu_handle_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM2(regs),
+    return sukisu_sys_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM2(regs),
                                              PT_REGS_PARM3(regs), false, orig_nr, regs);
 }
 
-long ksu_handle_execveat_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
+long sukisu_sys_execveat_sucompat(const char __user **filename_user, int orig_nr, struct pt_regs *regs)
 {
-    return ksu_handle_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM3(regs),
+    return sukisu_sys_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM3(regs),
                                              PT_REGS_SYSCALL_PARM4(regs), true, orig_nr, regs);
 }
 
@@ -271,3 +278,7 @@ void __exit ksu_sucompat_exit()
 {
     ksu_unregister_feature_handler(KSU_FEATURE_SU_COMPAT);
 }
+
+/* Absorb legacy VFS hooks from fs/exec.c to prevent pt_regs linker collision panics */
+bool ksu_handle_execveat_sucompat(int *fd, void *filename_ptr, void *argv, void *envp, int *flags) { return false; }
+bool ksu_handle_execve_sucompat(int *fd, void *filename_ptr, void *argv, void *envp, int *flags) { return false; }
