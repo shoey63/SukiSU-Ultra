@@ -20,6 +20,7 @@
 #include "feature/sulog.h"
 #include "supercall/supercall.h"
 #include "ksu.h"
+extern void susfs_init(void);
 #include "infra/file_wrapper.h"
 #include "selinux/selinux.h"
 #include "hook/syscall_hook.h"
@@ -162,6 +163,10 @@ int __init kernelsu_init(void)
 
     ksu_syscall_hook_init();
 
+#ifdef CONFIG_KSU_SUSFS
+    susfs_init();
+#endif
+
     ksu_feature_init();
     ksu_sulog_init();
     ksu_adb_root_init();
@@ -281,3 +286,17 @@ MODULE_IMPORT_NS("VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
 #else
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 #endif
+
+/* Universal weak stubs to absorb vanilla KernelSU VFS hooks from the patched core kernel tree */
+#include <linux/jump_label.h>
+__attribute__((weak)) int ksu_handle_execveat(void *a, void *b, void *c, void *d, void *e) { return 1; }
+__attribute__((weak)) int ksu_handle_faccessat(void *a, void *b, void *c, void *d) { return 0; }
+__attribute__((weak)) int ksu_handle_stat(void *a, void *b, void *c) { return 0; }
+__attribute__((weak)) void ksu_handle_vfs_fstat(int a, void *b) {}
+__attribute__((weak)) void ksu_handle_sys_read(unsigned int a, void *b, void *c) {}
+__attribute__((weak)) bool __ksu_is_allow_uid_for_current(uid_t uid) { return false; }
+DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
+DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
+
+/* Absorb vanilla KSU umount patch from core kernel to prevent LLVM LTO traps */
+__attribute__((weak)) void ksu_handle_umount(void) {}
