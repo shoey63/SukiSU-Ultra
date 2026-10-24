@@ -162,6 +162,7 @@ void apply_kernelsu_rules()
     ksu_destroy_sepolicy(old_pol);
 
     reset_avc_cache(pol->latest_granting);
+    susfs_set_batch_sid();
 out_unlock:
     mutex_unlock(&selinux_state.policy_mutex);
 }
@@ -522,6 +523,7 @@ int handle_sepolicy(void __user *user_data, u64 data_len)
     ksu_destroy_sepolicy(old_pol);
 
     reset_avc_cache(pol->latest_granting);
+    susfs_set_batch_sid();
     ret = success_cmd_count;
     goto out_unlock;
 

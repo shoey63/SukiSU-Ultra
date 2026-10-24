@@ -13,6 +13,7 @@
 #include "adb_root.h"
 #include "arch.h"
 #include "policy/feature.h"
+#include <linux/susfs_def.h>
 #include "selinux/selinux.h"
 
 #include "klog.h" // IWYU pragma: keep
@@ -21,27 +22,21 @@ DEFINE_STATIC_KEY_FALSE(ksu_adb_root);
 
 static long is_exec_adbd(const char __user *filename_user)
 {
-    static const char kAdbd[] = "/adbd";
-    static const size_t kAdbdLen = sizeof(kAdbd) - 1;
-    // should be bigger than `/apex/com.android.adbd/bin/adbd`
-    char buf[40];
+    char buf[256];
     char __user *fn;
     long ret;
     fn = (char __user *)untagged_addr((unsigned long)filename_user);
     memset(buf, 0, sizeof(buf));
 
     ret = strncpy_from_user(buf, fn, sizeof(buf));
-    if (ret < 0) {
-        pr_warn("Access filename when adb_root_handle_execve failed: %ld\n", ret);
-        return ret;
-    }
+    if (ret < 0) return ret;
 
-    // strncpy_from_user may copy `sizeof(buf)` bytes
-    if (ret < kAdbdLen || ret >= sizeof(buf) || memcmp(buf + ret - kAdbdLen, kAdbd, kAdbdLen + 1) != 0) {
-        return 0;
-    }
-
+#ifdef CONFIG_KSU_SUSFS
+    return (susfs_starts_with(buf, "/apex/") && susfs_ends_with(buf, "/adbd"));
+#else
+    if (ret < 5 || ret >= sizeof(buf) || memcmp(buf + ret - 5, "/adbd", 6) != 0) return 0;
     return 1;
+#endif
 }
 
 static long is_libadbroot_ok()
