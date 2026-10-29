@@ -34,7 +34,13 @@ long __nocfi sukisu_kpm_bridge(unsigned long op, unsigned long a1, unsigned long
         fn = (handler_t)find_kernel_symbol_exact("__arm64_sys_truncate");
         if (!fn) fn = (handler_t)find_kernel_symbol_exact("__arm64_sys_truncate.cfi_jt");
         if (!fn) fn = (handler_t)find_kernel_symbol_exact("__arm64_sys_truncate.cfi");
-        if (!fn) return -EOPNOTSUPP;
+        
+        if (!fn) {
+            pr_err("SUKISU_KPM_DEBUG: FATAL - Could not resolve __arm64_sys_truncate symbol!\n");
+            return -EOPNOTSUPP;
+        } else {
+            pr_info("SUKISU_KPM_DEBUG: SUCCESS - Hooked __arm64_sys_truncate at %px\n", fn);
+        }
         WRITE_ONCE(handler, fn);
     }
     regs.pstate = PSR_MODE_EL1h;
